@@ -293,7 +293,7 @@ static intnat do_compare_val(struct compare_stack* stk,
   next_item:
     /* Pop one more item to compare, if any */
     if (sp == stk->stack) return EQUAL; /* we're done */
-    uintnat offset = Long_val(sp->offset);
+    uintnat offset = Unsigned_long_val(sp->offset);
     v1 = Field(sp->v1, offset);
     v2 = Field(sp->v2, offset);
     ++offset;
