@@ -53,6 +53,8 @@ let promote = ref false
 
 let default_timeout = ref 0
 
+let do_not_run = ref false
+
 let keep_test_dir_on_success = ref false
 
 let find_test_dirs = ref []
@@ -90,6 +92,8 @@ let commandline_options =
    " List tests in given directory.");
   ("-keep-test-dir-on-success", Arg.Set keep_test_dir_on_success,
    " Keep the test directory (with the generated test artefacts) on success.");
+  ("-do-not-run", Arg.Set do_not_run,
+   " Do not execute `run` or `script` actions");
   ("-translate", Arg.Set translate,
    " Translate the test script from old to new syntax");
   ("-compact", Arg.Set compact,
@@ -113,6 +117,7 @@ let promote = !promote
 let default_timeout = !default_timeout
 let find_test_dirs = !find_test_dirs
 let list_tests = !list_tests
+let do_not_run = !do_not_run
 let keep_test_dir_on_success = !keep_test_dir_on_success
 let show_timings = !show_timings
 let translate = !translate
