@@ -160,6 +160,7 @@ let test_file test_filename =
   let summary = Sys.with_chdir test_build_directory_prefix
     (fun () ->
        let promote = string_of_bool Options.promote in
+       let do_not_run = string_of_bool Options.do_not_run in
        let default_timeout = string_of_int Options.default_timeout in
        let install_hook name =
          let hook_name = Filename.make_filename hookname_prefix name in
@@ -182,6 +183,7 @@ let test_file test_filename =
                test_build_directory_prefix;
              Builtin_variables.promote, promote;
              Builtin_variables.timeout, default_timeout;
+             Builtin_variables.do_not_run, do_not_run;
            ] in
        let rootenv =
          Environments.initialize Environments.Pre log initial_environment in

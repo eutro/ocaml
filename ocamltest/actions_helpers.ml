@@ -231,15 +231,19 @@ let run
     let expected_exit_status =
       exit_status_of_variable env Builtin_variables.exit_status
     in
-    let exit_status = run_cmd log env commandline in
-    if exit_status=expected_exit_status
-    then (Result.pass, env)
+    if Environments.lookup_as_bool Builtin_variables.do_not_run env = Some true
+    then (Result.skip_with_reason "-do-not-run enabled", env)
     else begin
-      let reason = mkreason what (String.concat " " commandline) exit_status in
-      if exit_status = 125 && can_skip
-      then (Result.skip_with_reason reason, env)
-      else (Result.fail_with_reason reason, env)
-    end
+        let exit_status = run_cmd log env commandline in
+        if exit_status=expected_exit_status
+        then (Result.pass, env)
+        else begin
+            let reason = mkreason what (String.concat " " commandline) exit_status in
+            if exit_status = 125 && can_skip
+            then (Result.skip_with_reason reason, env)
+            else (Result.fail_with_reason reason, env)
+          end
+      end
 
 let run_program =
   run

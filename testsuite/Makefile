@@ -84,6 +84,14 @@ else
   OCAMLTEST_KEEP_TEST_DIR_ON_SUCCESS_FLAG = -keep-test-dir-on-success
 endif
 
+# DO_NOT_RUN will pass the -do-not-run option to ocamltest, so tests are only compiled
+DO_NOT_RUN ?=
+ifeq "$(DO_NOT_RUN)" ""
+  OCAMLTEST_DO_NOT_RUN_FLAG =
+else
+  OCAMLTEST_DO_NOT_RUN_FLAG = -do-not-run
+endif
+
 TIMEOUT ?= 600 # 10 minutes
 
 # SHOW_TIMINGS should be set by the user (to a non-empty value) if they want
@@ -100,7 +108,8 @@ OCAMLTESTFLAGS = \
   -timeout $(TIMEOUT) \
   $(OCAMLTEST_PROMOTE_FLAG) \
   $(OCAMLTEST_KEEP_TEST_DIR_ON_SUCCESS_FLAG) \
-  $(OCAMLTEST_SHOW_TIMINGS_FLAG)
+  $(OCAMLTEST_SHOW_TIMINGS_FLAG) \
+  $(OCAMLTEST_DO_NOT_RUN_FLAG)
 
 # Make sure USE_RUNTIME is defined
 USE_RUNTIME ?=
