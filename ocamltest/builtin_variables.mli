@@ -23,6 +23,8 @@ val cwd : Variables.t
 
 val commandline : Variables.t
 
+val do_not_run : Variables.t
+
 val dst : Variables.t
 
 val exit_status : Variables.t
