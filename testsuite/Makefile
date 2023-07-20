@@ -266,12 +266,24 @@ one: lib tools
     TERM=dumb $(OCAMLTESTENV) $(ocamltest) $(OCAMLTESTFLAGS) $(TEST) \
      2>&1 | tee $(TESTLOG).one; fi
 	@if [ -n '$(LIST)' ] ; then \
-     while IFS='' read -r LINE; do \
-       $(MAKE) --no-print-directory exec-one DIR=$$LINE ; \
-     done < $$LIST 2>&1 | tee $(TESTLOG).one ; \
+     cat $$LIST | tr -d '\r' | while IFS='' read -r LINE; do \
+       $(MAKE) --no-print-directory exec-line LINE=$$LINE ; \
+     done 2>&1 | tee $(TESTLOG).one ; \
    fi
 	@$(MAKE) check-failstamp
 	@$(MAKE) TESTLOG=$(TESTLOG).one report
+
+.PHONY: exec-line
+exec-line:
+	@if [ -d '$(LINE)' ] ; then \
+	  $(MAKE) exec-one DIR='$(LINE)' ; \
+	fi
+	@if [ -f '$(LINE)' ] ; then \
+	  TERM=dumb $(OCAMLTESTENV) $(ocamltest) $(OCAMLTESTFLAGS) '$(LINE)' ; \
+	fi
+	@if [ ! -d '$(LINE)' ] && [ ! -f '$(LINE)' ] ; then \
+	  echo "Not a directory and not a file: $(LINE)" ; exit 1 ; \
+	fi
 
 .PHONY: exec-one
 exec-one:
