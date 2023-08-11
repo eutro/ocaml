@@ -150,7 +150,7 @@ struct interruptor {
   /* unlike the domain ID, this ID number is not reused */
   uintnat unique_id;
 
-  atomic_uintnat interrupt_pending;
+  caml_plat_futex interrupt_pending;
 };
 
 struct dom_internal {
@@ -299,17 +299,19 @@ Caml_inline void interrupt_domain(struct interruptor* s)
 
 int caml_incoming_interrupts_queued(void)
 {
-  return atomic_load_acquire(&domain_self->interruptor.interrupt_pending);
+  return atomic_load_acquire(&domain_self->interruptor.interrupt_pending.value);
 }
 
 /* must NOT be called with s->lock held */
 static void stw_handler(caml_domain_state* domain);
 static uintnat handle_incoming(struct interruptor* s)
 {
-  uintnat handled = atomic_load_acquire(&s->interrupt_pending);
+  caml_plat_futex_word* interrupt_pending = &s->interrupt_pending.value;
+  uintnat handled = atomic_load_acquire(interrupt_pending);
   CAMLassert (s->running);
   if (handled) {
-    atomic_store_release(&s->interrupt_pending, 0);
+    atomic_store_release(interrupt_pending, 0);
+    caml_plat_futex_wake_all(&s->interrupt_pending);
 
     stw_handler(domain_self->state);
   }
@@ -330,7 +332,8 @@ void caml_handle_incoming_interrupts(void)
 int caml_send_interrupt(struct interruptor* target)
 {
   /* signal that there is an interrupt pending */
-  atomic_store_release(&target->interrupt_pending, 1);
+  atomic_store_release(&target->interrupt_pending.value, 1);
+  caml_plat_futex_wake_all(&target->interrupt_pending);
 
   /* Signal the condition variable, in case the target is
      itself waiting for an interrupt to be processed elsewhere */
@@ -345,20 +348,11 @@ int caml_send_interrupt(struct interruptor* target)
 
 static void caml_wait_interrupt_serviced(struct interruptor* target)
 {
-  int i;
 
   /* Often, interrupt handlers are fast, so spin for a bit before waiting */
-  for (i=0; i<1000; i++) {
-    if (!atomic_load_acquire(&target->interrupt_pending)) {
+  SPIN_WAIT_ON(FUTEX(&target->interrupt_pending, 1)) {
+    if (!atomic_load_acquire(&target->interrupt_pending.value)) {
       return;
-    }
-    cpu_relax();
-  }
-
-  {
-    SPIN_WAIT {
-      if (!atomic_load_acquire(&target->interrupt_pending))
-        return;
     }
   }
 }
@@ -558,7 +552,7 @@ static void domain_create(uintnat initial_minor_heap_wsize) {
 
   s = &d->interruptor;
   CAMLassert(!s->running);
-  CAMLassert(!s->interrupt_pending);
+  CAMLassert(!s->interrupt_pending.value);
 
   domain_self = d;
 
@@ -594,7 +588,7 @@ static void domain_create(uintnat initial_minor_heap_wsize) {
 
   domain_state->id = d->id;
   domain_state->unique_id = d->interruptor.unique_id;
-  CAMLassert(!d->interruptor.interrupt_pending);
+  CAMLassert(!d->interruptor.interrupt_pending.value);
 
   domain_state->extra_heap_resources = 0.0;
   domain_state->extra_heap_resources_minor = 0.0;
@@ -883,7 +877,7 @@ void caml_init_domains(uintnat minor_heap_wsz) {
     dom->interruptor.running = 0;
     dom->interruptor.terminating = 0;
     dom->interruptor.unique_id = 0;
-    dom->interruptor.interrupt_pending = 0;
+    caml_plat_futex_init(&dom->interruptor.interrupt_pending, 0);
 
     caml_plat_mutex_init(&dom->domain_lock);
     caml_plat_cond_init(&dom->domain_cond, &dom->domain_lock);
@@ -1513,7 +1507,7 @@ int caml_try_run_on_all_domains_with_spin_work(
   for(i = 0; i < stw_domains.participating_domains; i++) {
     dom_internal * d = stw_domains.domains[i];
     stw_request.participating[i] = d->state;
-    CAMLassert(!d->interruptor.interrupt_pending);
+    CAMLassert(!d->interruptor.interrupt_pending.value);
     if (d->state != domain_state) caml_send_interrupt(&d->interruptor);
   }
 
@@ -1596,7 +1590,7 @@ void caml_reset_young_limit(caml_domain_state * dom_st)
      achieves the proper synchronisation. */
   atomic_exchange(&dom_st->young_limit, (uintnat)dom_st->young_trigger);
   dom_internal * d = &all_domains[dom_st->id];
-  if (atomic_load_relaxed(&d->interruptor.interrupt_pending)
+  if (atomic_load_relaxed(&d->interruptor.interrupt_pending.value)
       || dom_st->requested_minor_gc
       || dom_st->requested_major_slice
       || dom_st->major_slice_epoch < atomic_load (&caml_major_slice_epoch)
