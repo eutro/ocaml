@@ -46,7 +46,7 @@ struct generic_table CAML_TABLE_STRUCT(char);
 CAMLexport atomic_uintnat caml_minor_collections_count;
 CAMLexport atomic_uintnat caml_major_slice_epoch;
 
-static atomic_intnat domains_finished_minor_gc;
+static caml_plat_barrier domains_finished_minor_gc = CAML_PLAT_BARRIER_INITIALIZER;
 
 static atomic_uintnat caml_minor_cycles_started = 0;
 
@@ -642,8 +642,10 @@ void caml_empty_minor_heap_promote(caml_domain_state* domain,
   caml_reset_young_limit(domain);
 
   if( participating_count > 1 ) {
-    atomic_fetch_add_explicit
-      (&domains_finished_minor_gc, 1, memory_order_release);
+    if (caml_plat_barrier_arrive(&domains_finished_minor_gc)
+        == participating_count) {
+      caml_plat_barrier_release(&domains_finished_minor_gc);
+    }
   }
 
   domain->stat_minor_words += Wsize_bsize (minor_allocated_bytes);
@@ -679,7 +681,7 @@ void caml_do_opportunistic_major_slice
    if needed.
 */
 void caml_empty_minor_heap_setup(caml_domain_state* domain_unused) {
-  atomic_store_release(&domains_finished_minor_gc, 0);
+  caml_plat_barrier_reset(&domains_finished_minor_gc);
   /* Increment the total number of minor collections done in the program */
   atomic_fetch_add (&caml_minor_collections_count, 1);
 }
@@ -709,9 +711,8 @@ caml_stw_empty_minor_heap_no_major_slice(caml_domain_state* domain,
   if( participating_count > 1 ) {
     CAML_EV_BEGIN(EV_MINOR_LEAVE_BARRIER);
     {
-      SPIN_WAIT {
-        if (atomic_load_acquire(&domains_finished_minor_gc) ==
-            participating_count) {
+      SPIN_WAIT_ON(BARRIER(&domains_finished_minor_gc)) {
+        if (caml_plat_barrier_is_released(&domains_finished_minor_gc)) {
           break;
         }
 
