@@ -413,30 +413,31 @@ unsigned caml_plat_spin_wait(unsigned spins,
                              caml_plat_futex_value value,
                              const struct caml_plat_srcloc* loc)
 {
-  unsigned next_spins;
-  if (spins < Min_sleep_ns) spins = Min_sleep_ns;
-  if (spins > Max_sleep_ns) spins = Max_sleep_ns;
-  next_spins = spins + spins / 4;
-  if (spins < Slow_sleep_ns && Slow_sleep_ns <= next_spins) {
-    caml_gc_log("Slow spin-wait loop in %s at %s:%d",
-                loc->function, loc->file, loc->line);
+  if (spins < Barrier_sleep_ns) {
+    goto sleep;
   }
-  if (wait_type == CamlWaitNothing
-      || spins < Barrier_sleep_ns) {
-    usleep(spins/1000);
-  } else {
-    switch (wait_type) {
-    case CamlWaitBarrier:
-      caml_plat_barrier_wait(obj);
-      break;
-    case CamlWaitBarrierSense:
-      caml_plat_barrier_wait_sense(obj, !!value);
-      break;
-    case CamlWaitFutex:
-      caml_plat_futex_wait(obj, value);
-      break;
-    default: // unreachable
+  switch (wait_type) {
+  case CamlWaitBarrier:
+    caml_plat_barrier_wait(obj);
+    break;
+  case CamlWaitBarrierSense:
+    caml_plat_barrier_wait_sense(obj, !!value);
+    break;
+  case CamlWaitFutex:
+    caml_plat_futex_wait(obj, value);
+    break;
+  default: {
+    sleep:
+    if (spins < Min_sleep_ns) spins = Min_sleep_ns;
+    if (spins > Max_sleep_ns) spins = Max_sleep_ns;
+    unsigned next_spins = spins + spins / 4;
+    if (spins < Slow_sleep_ns && Slow_sleep_ns <= next_spins) {
+      caml_gc_log("Slow spin-wait loop in %s at %s:%d",
+                  loc->function, loc->file, loc->line);
     }
+    usleep(spins/1000);
+    return next_spins;
   }
-  return next_spins;
+  }
+  return spins;
 }
