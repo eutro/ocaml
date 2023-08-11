@@ -174,7 +174,7 @@ typedef struct dom_internal dom_internal;
 
 
 static struct {
-  atomic_uintnat domains_still_running;
+  caml_plat_futex domains_still_running;
   atomic_uintnat num_domains_still_processing;
   void (*callback)(caml_domain_state*,
                    void*,
@@ -190,7 +190,7 @@ static struct {
 
   caml_domain_state* participating[Max_domains];
 } stw_request = {
-  ATOMIC_UINTNAT_INIT(0),
+  CAML_PLAT_FUTEX_INITIALIZER(0),
   ATOMIC_UINTNAT_INIT(0),
   NULL,
   NULL,
@@ -1335,8 +1335,8 @@ static void stw_handler(caml_domain_state* domain)
   CAML_EV_BEGIN(EV_STW_HANDLER);
   CAML_EV_BEGIN(EV_STW_API_BARRIER);
   {
-    SPIN_WAIT {
-      if (atomic_load_acquire(&stw_request.domains_still_running) == 0)
+    SPIN_WAIT_ON(FUTEX(&stw_request.domains_still_running, 1)) {
+      if (atomic_load_acquire(&stw_request.domains_still_running.value) == 0)
         break;
 
       if (stw_request.enter_spin_callback)
@@ -1482,7 +1482,8 @@ int caml_try_run_on_all_domains_with_spin_work(
   stw_request.callback = handler;
   stw_request.data = data;
   // stw_request.barrier doesn't need resetting
-  atomic_store_release(&stw_request.domains_still_running, sync);
+  atomic_store_release(&stw_request.domains_still_running.value, sync);
+  // no futex_wake_all, nobody should be waiting here
   stw_request.num_domains = stw_domains.participating_domains;
   atomic_store_release(&stw_request.num_domains_still_processing,
                    stw_domains.participating_domains);
@@ -1534,7 +1535,8 @@ int caml_try_run_on_all_domains_with_spin_work(
   }
 
   /* release from the enter barrier */
-  atomic_store_release(&stw_request.domains_still_running, 0);
+  atomic_store_release(&stw_request.domains_still_running.value, 0);
+  caml_plat_futex_wake_all(&stw_request.domains_still_running);
 
   #ifdef DEBUG
   domain_state->inside_stw_handler = 1;
