@@ -186,7 +186,7 @@ static struct {
 
   /* barrier state */
   int num_domains;
-  atomic_uintnat barrier;
+  caml_plat_barrier barrier;
 
   caml_domain_state* participating[Max_domains];
 } stw_request = {
@@ -197,7 +197,7 @@ static struct {
   NULL,
   NULL,
   0,
-  ATOMIC_UINTNAT_INIT(0),
+  CAML_PLAT_BARRIER_INITIALIZER,
   { 0 },
 };
 
@@ -1283,8 +1283,7 @@ CAMLprim value caml_ml_domain_unique_token (value unit)
 
 barrier_status caml_global_barrier_begin(void)
 {
-  uintnat b = 1 + atomic_fetch_add(&stw_request.barrier, 1);
-  return b;
+  return caml_plat_barrier_arrive(&stw_request.barrier);
 }
 
 int caml_global_barrier_is_final(barrier_status b)
@@ -1294,15 +1293,16 @@ int caml_global_barrier_is_final(barrier_status b)
 
 void caml_global_barrier_end(barrier_status b)
 {
-  uintnat sense = b & BARRIER_SENSE_BIT;
+  barrier_status sense = b & BARRIER_SENSE_BIT;
   if (caml_global_barrier_is_final(b)) {
     /* last domain into the barrier, flip sense */
-    atomic_store_release(&stw_request.barrier, sense ^ BARRIER_SENSE_BIT);
+    caml_plat_barrier_flip(&stw_request.barrier, sense);
   } else {
     /* wait until another domain flips the sense */
-    SPIN_WAIT {
-      uintnat barrier = atomic_load_acquire(&stw_request.barrier);
-      if ((barrier & BARRIER_SENSE_BIT) != sense) break;
+    SPIN_WAIT_ON(BARRIER_SENSE(&stw_request.barrier, sense)) {
+      if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
+        break;
+      }
     }
   }
 }
@@ -1487,7 +1487,7 @@ int caml_try_run_on_all_domains_with_spin_work(
   stw_request.enter_spin_data = enter_spin_data;
   stw_request.callback = handler;
   stw_request.data = data;
-  atomic_store_release(&stw_request.barrier, 0);
+  // stw_request.barrier doesn't need resetting
   atomic_store_release(&stw_request.domains_still_running, sync);
   stw_request.num_domains = stw_domains.participating_domains;
   atomic_store_release(&stw_request.num_domains_still_processing,
