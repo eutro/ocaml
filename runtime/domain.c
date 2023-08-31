@@ -1277,6 +1277,11 @@ CAMLprim value caml_ml_domain_unique_token (value unit)
 
 barrier_status caml_global_barrier_begin(void)
 {
+  if (stw_request.num_domains == 1) {
+    /* avoid expensive atomics if we're alone, return a status that
+       counts as final */
+    return 1 /* == stw_request.num_domains */;
+  }
   return caml_plat_barrier_arrive(&stw_request.barrier);
 }
 
@@ -1290,14 +1295,13 @@ void caml_global_barrier_end(barrier_status b)
   barrier_status sense = b & BARRIER_SENSE_BIT;
   if (caml_global_barrier_is_final(b)) {
     /* last domain into the barrier, flip sense */
-    caml_plat_barrier_flip(&stw_request.barrier, sense);
+    if (stw_request.num_domains != 1) {
+      caml_plat_barrier_flip(&stw_request.barrier, sense);
+    }
   } else {
     /* wait until another domain flips the sense */
-    SPIN_WAIT_ON_FOR(
-      BARRIER_SENSE(&stw_request.barrier, sense),
-      Max_spins_contested(stw_request.num_domains),
-      0
-    ) {
+    unsigned spins = Max_spins_contested(stw_request.num_domains);
+    SPIN_WAIT_ON_FOR(BARRIER_SENSE(&stw_request.barrier, sense), spins, 0) {
       if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
         break;
       }
