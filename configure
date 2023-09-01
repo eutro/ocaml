@@ -14518,6 +14518,19 @@ then :
 fi
 
 
+case $host in #(
+  *-*-linux*) :
+    ac_fn_c_check_header_compile "$LINENO" "linux/futex.h" "ac_cv_header_linux_futex_h" "$ac_includes_default"
+if test "x$ac_cv_header_linux_futex_h" = xyes
+then :
+  printf "%s\n" "#define HAS_LINUX_FUTEX_H 1" >>confdefs.h
+
+fi
+ ;; #(
+  *) :
+     ;;
+esac
+
 # Checks for types
 
 ## off_t

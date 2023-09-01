@@ -1008,6 +1008,10 @@ AC_CHECK_HEADER([stdatomic.h], [AC_DEFINE([HAS_STDATOMIC_H])])
 
 AC_CHECK_HEADER([sys/mman.h], [AC_DEFINE([HAS_SYS_MMAN_H])])
 
+AS_CASE([$host],
+  [*-*-linux*],
+    [AC_CHECK_HEADER([linux/futex.h], [AC_DEFINE([HAS_LINUX_FUTEX_H])])])
+
 # Checks for types
 
 ## off_t

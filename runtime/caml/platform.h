@@ -102,9 +102,10 @@ typedef _Atomic caml_plat_futex_value caml_plat_futex_word;
 /* Define CAML_PLAT_FUTEX_FALLBACK to use the condition-variable
    fallback, even if a futex implementation is available */
 #ifndef CAML_PLAT_FUTEX_FALLBACK
-#  if defined(_WIN32) || defined(__linux__) || \
-      defined(__FreeBSD__) || defined(__OpenBSD__) /* || \
-   These exist, but are untested
+#  if defined(_WIN32)                                   \
+  || (defined(__linux__) && defined(HAS_LINUX_FUTEX_H)) \
+  || defined(__FreeBSD__) || defined(__OpenBSD__)
+/*  These exist, but are untested
       defined(__NetBSD__) || defined(__DragonFly__) */
 #  else
 #    define CAML_PLAT_FUTEX_FALLBACK
