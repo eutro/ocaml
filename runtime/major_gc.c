@@ -1425,7 +1425,7 @@ static void cycle_all_domains_callback(caml_domain_state* domain, void* unused,
   caml_global_barrier();
 
   /* Someone should flush the allocation stats we gathered during the cycle */
-  if( participating[0] == Caml_state ) {
+  if( participating[0] == domain ) {
     CAML_EV_ALLOC_FLUSH();
   }
 

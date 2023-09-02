@@ -193,7 +193,12 @@ barrier_status caml_plat_barrier_arrive(caml_plat_barrier*);
 #define Barrier_uncontested 1
 #define Barrier_contested 2
 /* Reset the barrier to 0 arrivals, block new waiters */
-void caml_plat_barrier_reset(caml_plat_barrier*);
+Caml_inline void caml_plat_barrier_reset(caml_plat_barrier* barrier) {
+  atomic_store_relaxed(&barrier->futex.value, Barrier_uncontested);
+  /* threads check arrivals before the futex, 'release' ordering
+     ensures they see it reset */
+  atomic_store_release(&barrier->arrived, 0);
+}
 /* Release the barrier unconditionally, letting all parties through */
 void caml_plat_barrier_release(caml_plat_barrier*);
 /* Check if the barrier has been released */

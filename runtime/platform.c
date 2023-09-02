@@ -256,15 +256,6 @@ barrier_status caml_plat_barrier_arrive(caml_plat_barrier* barrier) {
 
 /* single-sense */
 
-void caml_plat_barrier_reset(caml_plat_barrier* barrier) {
-  /* if a thread observes the arrival count, it must also observe the
-     blocking state - a thread always observes the arrival count (by
-     fetch_add-ing it) before checking the futex */
-  atomic_store_relaxed(&barrier->futex.value, Barrier_uncontested);
-  atomic_thread_fence(memory_order_release);
-  atomic_store_release(&barrier->arrived, 0);
-}
-
 void caml_plat_barrier_release(caml_plat_barrier* barrier) {
   /* if nobody is blocking, release in user-space */
   if (atomic_exchange(&barrier->futex.value, Barrier_released) != Barrier_uncontested) {
@@ -293,11 +284,10 @@ static void caml_plat_barrier_wait(caml_plat_barrier* barrier) {
 
 void caml_plat_barrier_flip(caml_plat_barrier* barrier, barrier_status current_sense) {
   uintnat new_sense = current_sense ^ BARRIER_SENSE_BIT;
-  atomic_store_release(&barrier->arrived, new_sense);
-  /* if a thread observes the flip below, it must also observe the
-     reset counter, since any currently blocked threads will check the
+  atomic_store_relaxed(&barrier->arrived, new_sense);
+  /* if a thread observes the flip below, it will also observe the
+     reset counter, since any currently waiting threads will check the
      futex before leaving, they will see the counter correctly */
-  atomic_thread_fence(memory_order_release);
 
   caml_plat_futex_value
     current_sense_word = (caml_plat_futex_value) current_sense,
