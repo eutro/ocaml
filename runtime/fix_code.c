@@ -133,13 +133,7 @@ void caml_thread_code (code_t code, asize_t len)
   len /= sizeof(opcode_t);
   for (p = code; p < code + len; /*nothing*/) {
     opcode_t instr = *p;
-    if (instr < 0 || instr >= FIRST_UNIMPLEMENTED_OP){
-      /* FIXME -- should Assert(false) ?
-      caml_fatal_error ("in fix_code: bad opcode (%lx)",
-                            (char *)(long)instr);
-      */
-      instr = STOP;
-    }
+    CAMLassert(0 <= instr && instr < FIRST_UNIMPLEMENTED_OP);
     *p++ = (opcode_t)(caml_instr_table[instr] - caml_instr_base);
     if (instr == SWITCH) {
       uint32_t sizes = *p++;

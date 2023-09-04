@@ -175,11 +175,16 @@ typedef uint64_t uintnat;
 
 
 /* We use threaded code interpretation if the compiler provides labels
-   as first-class values (GCC 2.x). */
+   as first-class values (GCC 2.x).
+
+   Otherwise, as a fallback, use switched-goto, which doesn't use C
+   extensions. */
 
 #if defined(__GNUC__) && __GNUC__ >= 2 && !defined(DEBUG) \
     && !defined (SHRINKED_GNUC)
-#define THREADED_CODE
+#  define THREADED_CODE
+#else
+#  define SWITCH_THREADED_CODE
 #endif
 
 

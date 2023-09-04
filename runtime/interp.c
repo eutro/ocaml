@@ -51,19 +51,49 @@ sp is a local copy of the global variable Caml_state->extern_sp. */
 
 /* Instruction decoding */
 
-#ifdef THREADED_CODE
-#  define Instruct(name) lbl_##name
-#  if defined(ARCH_SIXTYFOUR) && !defined(ARCH_CODE32)
-#    define Jumptbl_base &&lbl_ACC0
+#if defined(THREADED_CODE) || defined(SWITCH_THREADED_CODE)
+#  define ANY_THREADED_CODE
+#endif
+
+#ifndef unreachable // C23 has it
+#  if defined(__GNUC__)
+#    define unreachable() (__builtin_unreachable())
+#  elif defined(__MSC_VER)
+#    define unreachable() (__assume(0))
 #  else
-#    define Jumptbl_base 0
-#    define jumptbl_base ((char *) 0)
+CAMLnoret Caml_inline void unreachable_impl() {}
+#    define unreachable() (unreachable_impl())
 #  endif
+#endif
+
+#ifdef ANY_THREADED_CODE
+#  include "caml/jumptbl.h"
+#  define Instruct(name) lbl_##name
+
+#  ifdef SWITCH_THREADED_CODE
+#    define TBL_ENTRY(name) case name: goto lbl_##name;
+#    define Exec_instruction(opcode) do {       \
+    switch (opcode) {                           \
+      JUMPTBL(TBL_ENTRY)                        \
+    default: unreachable();                     \
+    }                                           \
+  } while(0)
+#  else
+#    if defined(ARCH_SIXTYFOUR) && !defined(ARCH_CODE32)
+#      define Jumptbl_base &&lbl_ACC0
+#    else
+#      define Jumptbl_base 0
+#      define jumptbl_base ((char *) 0)
+#    endif
+#    define Exec_instruction(opcode) goto *(void *)(jumptbl_base + (opcode))
+#  endif
+
 #  ifdef DEBUG
 #    define Next goto next_instr
 #  else
-#    define Next goto *(void *)(jumptbl_base + *pc++)
+#    define Next Exec_instruction(*pc++)
 #  endif
+
 #else
 #  define Instruct(name) case name
 #  define Next break
@@ -124,9 +154,9 @@ sp is a local copy of the global variable Caml_state->extern_sp. */
      CAMLassert(sp[2] == env); \
      sp += 4; }
 
-#ifdef THREADED_CODE
+#ifdef ANY_THREADED_CODE
 #define Restart_curr_instr \
-  goto *((void*)(jumptbl_base + caml_debugger_saved_instruction(pc - 1)))
+  Exec_instruction(caml_debugger_saved_instruction(pc - 1));
 #else
 #define Restart_curr_instr \
   curr_instr = caml_debugger_saved_instruction(pc - 1); \
@@ -275,14 +305,13 @@ value caml_interprete(code_t prog, asize_t prog_size)
   caml_domain_state* domain_state = Caml_state;
   struct caml_exception_context exception_ctx =
     { &raise_buf, domain_state->local_roots, &raise_exn_bucket};
-#ifndef THREADED_CODE
+#ifndef ANY_THREADED_CODE
   opcode_t curr_instr;
 #endif
 
 #ifdef THREADED_CODE
-  static void * jumptable[] = {
-#    include "caml/jumptbl.h"
-  };
+#  define TBL_ENTRY(name) &&lbl_##name,
+  static void * jumptable[] = { JUMPTBL(TBL_ENTRY) };
 #endif
 
   if (prog == NULL) {           /* Interpreter is initializing */
@@ -343,17 +372,17 @@ value caml_interprete(code_t prog, asize_t prog_size)
   env = Atom(0);
   accu = Val_int(0);
 
-#ifdef THREADED_CODE
-#ifdef DEBUG
+#ifdef ANY_THREADED_CODE
+#  ifdef DEBUG
  next_instr:
   if (caml_icount-- == 0) caml_stop_here ();
   CAMLassert(Stack_base(domain_state->current_stack) <= sp);
   CAMLassert(sp <= Stack_high(domain_state->current_stack));
-#endif
-  goto *(void *)(jumptbl_base + *pc++); /* Jump to the first instruction */
+#  endif
+  Exec_instruction(*pc++); /* Jump to the first instruction */
 #else
   while(1) {
-#ifdef DEBUG
+#  ifdef DEBUG
     caml_bcodcount++;
     if (caml_icount-- == 0) caml_stop_here ();
     if (caml_params->trace_level>1)
@@ -370,7 +399,7 @@ value caml_interprete(code_t prog, asize_t prog_size)
     CAMLassert(Stack_base(domain_state->current_stack) <= sp);
     CAMLassert(sp <= Stack_high(domain_state->current_stack));
 
-#endif
+#  endif
     curr_instr = *pc++;
 
   dispatch_instr:
@@ -1403,15 +1432,9 @@ do_resume: {
       goto check_stacks;
     }
 
-#ifndef THREADED_CODE
+#ifndef ANY_THREADED_CODE
     default:
-#ifdef _MSC_VER
-      __assume(0);
-#else
-      caml_fatal_error("bad opcode (%"
-                           ARCH_INTNAT_PRINTF_FORMAT "x)",
-                           (intnat) *(pc-1));
-#endif
+      unreachable();
     }
   }
 #endif
