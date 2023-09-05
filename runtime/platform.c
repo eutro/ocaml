@@ -264,7 +264,7 @@ void caml_plat_barrier_release(caml_plat_barrier* barrier) {
   }
 }
 
-static void caml_plat_barrier_wait(caml_plat_barrier* barrier) {
+void caml_plat_barrier_wait(caml_plat_barrier* barrier) {
   /* indicate that we are about to block */
   caml_plat_futex_value expected = Barrier_uncontested;
   (void)atomic_compare_exchange_strong(&barrier->futex.value, &expected, Barrier_contested);
@@ -300,9 +300,8 @@ void caml_plat_barrier_flip(caml_plat_barrier* barrier, barrier_status current_s
   }
 }
 
-static void caml_plat_barrier_wait_sense(caml_plat_barrier* barrier, unsigned current_sense) {
+void caml_plat_barrier_wait_sense(caml_plat_barrier* barrier, barrier_status sense_bit) {
   /* indicate that we are about to block */
-  caml_plat_futex_value sense_bit = current_sense ? BARRIER_SENSE_BIT : 0;
   caml_plat_futex_value expected = sense_bit;
   (void)atomic_compare_exchange_strong(&barrier->futex.value, &expected, sense_bit | 1);
   /* wait until the sense changes */
@@ -402,43 +401,16 @@ void caml_mem_unmap(void* mem, uintnat size)
 #define Slow_sleep_ns    1000000 //  1 ms
 #define Max_sleep_ns  1000000000 //  1 s
 
-Caml_inline unsigned get_next_spins(unsigned *spins) {
-  if (*spins < Min_sleep_ns) *spins = Min_sleep_ns;
-  if (*spins > Max_sleep_ns) *spins = Max_sleep_ns;
-  return *spins + *spins / 4;
-}
-
-unsigned caml_plat_spin_yield(unsigned spins) {
-  unsigned next_spins = get_next_spins(&spins);
+unsigned caml_plat_spin_wait(unsigned spins,
+                             const struct caml_plat_srcloc* loc)
+{
+  if (spins < Min_sleep_ns) spins = Min_sleep_ns;
+  if (spins > Max_sleep_ns) spins = Max_sleep_ns;
+  unsigned next_spins = spins + spins / 4;
+  if (spins < Slow_sleep_ns && Slow_sleep_ns <= next_spins) {
+    caml_gc_log("Slow spin-wait loop in %s at %s:%d",
+                loc->function, loc->file, loc->line);
+  }
   usleep(spins/1000);
   return next_spins;
-}
-
-unsigned caml_plat_spin_block(unsigned spins,
-                              enum caml_plat_wait_type wait_type,
-                              void* obj,
-                              caml_plat_futex_value value,
-                              const struct caml_plat_srcloc* loc)
-{
-  switch (wait_type) {
-  case CamlWaitBarrier:
-    caml_plat_barrier_wait(obj);
-    break;
-  case CamlWaitBarrierSense:
-    caml_plat_barrier_wait_sense(obj, !!value);
-    break;
-  case CamlWaitFutex:
-    caml_plat_futex_wait(obj, value);
-    break;
-  default: {
-    unsigned next_spins = get_next_spins(&spins);
-    if (spins < Slow_sleep_ns && Slow_sleep_ns <= next_spins) {
-      caml_gc_log("Slow spin-wait loop in %s at %s:%d",
-                  loc->function, loc->file, loc->line);
-    }
-    usleep(spins/1000);
-    return next_spins;
-  }
-  }
-  return spins;
 }

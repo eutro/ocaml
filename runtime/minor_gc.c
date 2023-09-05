@@ -675,12 +675,14 @@ static void actually_do_opportunistic_major_slice(void)
   if (log_events) CAML_EV_END(EV_MAJOR_MARK_OPPORTUNISTIC);
 }
 
-void caml_do_opportunistic_major_slice
+int caml_do_opportunistic_major_slice
   (caml_domain_state* domain_state, void* unused)
 {
   if (caml_opportunistic_major_work_available(domain_state)) {
     actually_do_opportunistic_major_slice();
+    return 1;
   }
+  return 0;
 }
 
 /* Increment the counter non-atomically, when it is already known that this
@@ -700,26 +702,19 @@ void caml_empty_minor_heap_setup(caml_domain_state* domain_unused) {
 
 static void minor_gc_leave_barrier(caml_domain_state* domain, int participating_count)
 {
-  /* spin for longer while we have major work available */
-  SPIN_WAIT_ON_FOR(BARRIER(&domains_finished_minor_gc), Max_spins, 0) {
+  /* Spin while we have major work available */
+  SPIN_WAIT_BOUNDED {
     if (caml_plat_barrier_is_released(&domains_finished_minor_gc)) {
       return;
     }
 
-    if (caml_opportunistic_major_work_available(domain)) {
-      actually_do_opportunistic_major_slice();
-    } else {
+    if (!caml_do_opportunistic_major_slice(domain, 0)) {
       break;
     }
   }
 
-  /* if there's nothing to do, yield to synchronisation fast */
-  unsigned spins = Max_spins_contested(participating_count);
-  SPIN_WAIT_ON_FOR(BARRIER(&domains_finished_minor_gc), spins, 0) {
-    if (caml_plat_barrier_is_released(&domains_finished_minor_gc)) {
-      return;
-    }
-  }
+  /* If there's nothing to do, block */
+  caml_plat_barrier_wait(&domains_finished_minor_gc);
 }
 
 /* must be called within a STW section */

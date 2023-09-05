@@ -181,7 +181,7 @@ static struct {
                    int participating_count,
                    caml_domain_state** others_participating);
   void* data;
-  void (*enter_spin_callback)(caml_domain_state*, void*);
+  int (*enter_spin_callback)(caml_domain_state*, void*);
   void* enter_spin_data;
 
   /* barrier state */
@@ -350,11 +350,13 @@ static void caml_wait_interrupt_serviced(struct interruptor* target)
 {
 
   /* Often, interrupt handlers are fast, so spin for a bit before waiting */
-  SPIN_WAIT_ON(FUTEX(&target->interrupt_pending, 1)) {
+  SPIN_WAIT_BOUNDED {
     if (!atomic_load_acquire(&target->interrupt_pending.value)) {
       return;
     }
   }
+  /* Block */
+  caml_plat_futex_wait(&target->interrupt_pending, 1);
 }
 
 asize_t caml_norm_minor_heap_size (intnat wsize)
@@ -1300,17 +1302,13 @@ void caml_global_barrier_end(barrier_status b)
     }
   } else {
     /* wait until another domain flips the sense */
-    unsigned spins = Max_spins_contested(stw_request.num_domains);
-    SPIN_WAIT_ON_FOR(BARRIER_SENSE(&stw_request.barrier, sense), spins, 0) {
-      if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
-        break;
-      }
-    }
+    caml_plat_barrier_wait_sense(&stw_request.barrier, sense);
   }
 }
 
 void caml_global_barrier(void)
 {
+  if (stw_request.num_domains == 1) return;
   barrier_status b = caml_global_barrier_begin();
   caml_global_barrier_end(b);
 }
@@ -1338,19 +1336,31 @@ static void decrement_stw_domains_still_processing(void)
   }
 }
 
+/* Wait for other running domains to stop */
+static void stw_wait_for_running(caml_domain_state* domain)
+{
+  /* Spin while there is useful work available */
+  if (stw_request.enter_spin_callback) {
+    SPIN_WAIT_BOUNDED {
+      if (!atomic_load_acquire(&stw_request.domains_still_running.value)) {
+        return;
+      }
+
+      if (!stw_request.enter_spin_callback(domain, stw_request.enter_spin_data)) {
+        break;
+      }
+    }
+  }
+
+  /* Block */
+  caml_plat_futex_wait(&stw_request.domains_still_running, 1);
+}
+
 static void stw_handler(caml_domain_state* domain)
 {
   CAML_EV_BEGIN(EV_STW_HANDLER);
   CAML_EV_BEGIN(EV_STW_API_BARRIER);
-  {
-    SPIN_WAIT_ON(FUTEX(&stw_request.domains_still_running, 1)) {
-      if (atomic_load_acquire(&stw_request.domains_still_running.value) == 0)
-        break;
-
-      if (stw_request.enter_spin_callback)
-        stw_request.enter_spin_callback(domain, stw_request.enter_spin_data);
-    }
-  }
+  stw_wait_for_running(domain);
   CAML_EV_END(EV_STW_API_BARRIER);
 
   #ifdef DEBUG
@@ -1448,7 +1458,7 @@ int caml_try_run_on_all_domains_with_spin_work(
   void (*handler)(caml_domain_state*, void*, int, caml_domain_state**),
   void* data,
   void (*leader_setup)(caml_domain_state*),
-  void (*enter_spin_callback)(caml_domain_state*, void*),
+  int (*enter_spin_callback)(caml_domain_state*, void*),
   void* enter_spin_data)
 {
   int i;

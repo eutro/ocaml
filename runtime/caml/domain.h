@@ -104,7 +104,7 @@ int caml_try_run_on_all_domains_with_spin_work(
   void (*handler)(caml_domain_state*, void*, int, caml_domain_state**),
   void* data,
   void (*leader_setup)(caml_domain_state*),
-  void (*enter_spin_callback)(caml_domain_state*, void*),
+  int (*enter_spin_callback)(caml_domain_state*, void*),
   void* enter_spin_data);
 int caml_try_run_on_all_domains(
   void (*handler)(caml_domain_state*, void*, int, caml_domain_state**),
