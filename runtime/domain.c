@@ -172,7 +172,6 @@ struct dom_internal {
 };
 typedef struct dom_internal dom_internal;
 
-
 static struct {
   caml_plat_futex domains_still_running;
   atomic_uintnat num_domains_still_processing;
@@ -299,23 +298,21 @@ Caml_inline void interrupt_domain(struct interruptor* s)
 
 int caml_incoming_interrupts_queued(void)
 {
-  return atomic_load_acquire(&domain_self->interruptor.interrupt_pending.value);
+  return atomic_load_acquire(&domain_self->interruptor.interrupt_pending.value) != Barrier_released;
 }
 
 /* must NOT be called with s->lock held */
 static void stw_handler(caml_domain_state* domain);
 static uintnat handle_incoming(struct interruptor* s)
 {
-  caml_plat_futex_word* interrupt_pending = &s->interrupt_pending.value;
-  uintnat handled = atomic_load_acquire(interrupt_pending);
+  uintnat handled = atomic_load_acquire(&s->interrupt_pending.value);
   CAMLassert (s->running);
   if (handled) {
-    atomic_store_release(interrupt_pending, 0);
-    caml_plat_futex_wake_all(&s->interrupt_pending);
+    caml_plat_barrier_raw_release(&s->interrupt_pending);
 
     stw_handler(domain_self->state);
   }
-  return handled;
+  return !!handled;
 }
 
 static void handle_incoming_otherwise_relax (struct interruptor* self)
@@ -332,8 +329,7 @@ void caml_handle_incoming_interrupts(void)
 int caml_send_interrupt(struct interruptor* target)
 {
   /* signal that there is an interrupt pending */
-  atomic_store_release(&target->interrupt_pending.value, 1);
-  /* no wake, nobody waits on this */
+  atomic_store_release(&target->interrupt_pending.value, Barrier_unreleased);
 
   /* Signal the condition variable, in case the target is
      itself waiting for an interrupt to be processed elsewhere */
@@ -348,15 +344,23 @@ int caml_send_interrupt(struct interruptor* target)
 
 static void caml_wait_interrupt_serviced(struct interruptor* target)
 {
-
-  /* Often, interrupt handlers are fast, so spin for a bit before waiting */
-  SPIN_WAIT_BOUNDED {
+  /* Interrupt handlers tend to be fast, and in a lot of cases the
+     interrupt has already been handled since we issued it. (The
+     leader also calls this on itself, and this is always true in that
+     case) */
+  if (CAMLlikely(!atomic_load_acquire(&target->interrupt_pending.value))) {
+    return;
+  }
+  /* With two domains, we can usually get by with spinning for it,
+     otherwise it isn't worth it. */
+  unsigned spins = stw_request.num_domains == 2 ? Max_spins_long : Max_spins_short;
+  SPIN_WAIT_NTIMES(spins) {
     if (!atomic_load_acquire(&target->interrupt_pending.value)) {
       return;
     }
   }
-  /* Block */
-  caml_plat_futex_wait(&target->interrupt_pending, 1);
+  /* Otherwise, block */
+  caml_plat_barrier_raw_wait(&target->interrupt_pending);
 }
 
 asize_t caml_norm_minor_heap_size (intnat wsize)
@@ -1301,6 +1305,13 @@ void caml_global_barrier_end(barrier_status b)
       caml_plat_barrier_flip(&stw_request.barrier, sense);
     }
   } else {
+    /* it's not worth spinning for too long if there's more than one other domain */
+    unsigned spins = stw_request.num_domains == 2 ? Max_spins_long : Max_spins_short;
+    SPIN_WAIT_NTIMES(spins) {
+      if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
+        break;
+      }
+    }
     /* wait until another domain flips the sense */
     caml_plat_barrier_wait_sense(&stw_request.barrier, sense);
   }
@@ -1339,8 +1350,13 @@ static void decrement_stw_domains_still_processing(void)
 /* Wait for other running domains to stop */
 static void stw_wait_for_running(caml_domain_state* domain)
 {
-  /* Spin while there is useful work available */
+  /* The STW leader issues interrupts to all threads, then checks if
+     all threads have been successfully interrupted, before flipping
+     the barrier we are waiting on; this tends to (and should) be
+     fast, but we likely need to wait a bit in any case */
+
   if (stw_request.enter_spin_callback) {
+    /* Spin while there is useful work to do */
     SPIN_WAIT_BOUNDED {
       if (!atomic_load_acquire(&stw_request.domains_still_running.value)) {
         return;
@@ -1352,8 +1368,15 @@ static void stw_wait_for_running(caml_domain_state* domain)
     }
   }
 
-  /* Block */
-  caml_plat_futex_wait(&stw_request.domains_still_running, 1);
+  /* Spin a bit for the other domains */
+  SPIN_WAIT_BOUNDED {
+    if (!atomic_load_acquire(&stw_request.domains_still_running.value)) {
+      return;
+    }
+  }
+
+  /* If we're still waiting, block */
+  caml_plat_barrier_raw_wait(&stw_request.domains_still_running);
 }
 
 static void stw_handler(caml_domain_state* domain)
@@ -1493,18 +1516,18 @@ int caml_try_run_on_all_domains_with_spin_work(
   CAML_EV_BEGIN(EV_STW_LEADER);
   caml_gc_log("causing STW");
 
-  /* setup all fields for this stw_request, must have those needed
-     for domains waiting at the enter spin barrier */
+  /* set up all fields for this stw_request, must have those needed
+     for domains waiting at the enter barrier */
   stw_request.enter_spin_callback = enter_spin_callback;
   stw_request.enter_spin_data = enter_spin_data;
   stw_request.callback = handler;
   stw_request.data = data;
   /* stw_request.barrier doesn't need resetting */
-  atomic_store_release(&stw_request.domains_still_running.value, sync);
-  /* no futex_wake_all, nobody is waiting on it */
+  atomic_store_release(&stw_request.domains_still_running.value,
+                       sync ? Barrier_unreleased : Barrier_released);
   stw_request.num_domains = stw_domains.participating_domains;
   atomic_store_release(&stw_request.num_domains_still_processing,
-                   stw_domains.participating_domains);
+                       stw_domains.participating_domains);
 
   if( leader_setup ) {
     leader_setup(domain_state);
@@ -1553,8 +1576,9 @@ int caml_try_run_on_all_domains_with_spin_work(
   }
 
   /* release from the enter barrier */
-  atomic_store_release(&stw_request.domains_still_running.value, 0);
-  caml_plat_futex_wake_all(&stw_request.domains_still_running);
+  if (sync) {
+    caml_plat_barrier_raw_release(&stw_request.domains_still_running);
+  }
 
   #ifdef DEBUG
   domain_state->inside_stw_handler = 1;

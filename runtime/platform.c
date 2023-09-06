@@ -256,22 +256,22 @@ barrier_status caml_plat_barrier_arrive(caml_plat_barrier* barrier) {
 
 /* single-sense */
 
-void caml_plat_barrier_release(caml_plat_barrier* barrier) {
+void caml_plat_barrier_raw_release(caml_plat_futex* futex) {
   /* if nobody is blocking, release in user-space */
-  if (atomic_exchange(&barrier->futex.value, Barrier_released) != Barrier_uncontested) {
+  if (atomic_exchange(&futex->value, Barrier_released) != Barrier_unreleased) {
     /* at least one thread is (going to be) blocked on the futex, notify */
-    caml_plat_futex_wake_all(&barrier->futex);
+    caml_plat_futex_wake_all(futex);
   }
 }
 
-void caml_plat_barrier_wait(caml_plat_barrier* barrier) {
+void caml_plat_barrier_raw_wait(caml_plat_futex* futex) {
   /* indicate that we are about to block */
-  caml_plat_futex_value expected = Barrier_uncontested;
-  (void)atomic_compare_exchange_strong(&barrier->futex.value, &expected, Barrier_contested);
+  caml_plat_futex_value expected = Barrier_unreleased;
+  (void)atomic_compare_exchange_strong(&futex->value, &expected, Barrier_contested);
   /* it's either already released (== Barrier_released), or we are
      going to block (== Barrier_contested), futex_wait() here will
      take care of both */
-  caml_plat_futex_wait(&barrier->futex, Barrier_contested);
+  caml_plat_futex_wait(futex, Barrier_contested);
 }
 
 /* sense-reversing */

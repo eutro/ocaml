@@ -203,23 +203,42 @@ barrier_status caml_plat_barrier_arrive(caml_plat_barrier*);
    - 2 if anybody is blocking (or about to)
  */
 #define Barrier_released 0
-#define Barrier_uncontested 1
+#define Barrier_unreleased 1
 #define Barrier_contested 2
+
 /* Reset the barrier to 0 arrivals, block new waiters */
 Caml_inline void caml_plat_barrier_reset(caml_plat_barrier* barrier) {
-  atomic_store_relaxed(&barrier->futex.value, Barrier_uncontested);
+  atomic_store_relaxed(&barrier->futex.value, Barrier_unreleased);
   /* threads check arrivals before the futex, 'release' ordering
      ensures they see it reset */
   atomic_store_release(&barrier->arrived, 0);
 }
-/* Release the barrier unconditionally, letting all parties through */
-void caml_plat_barrier_release(caml_plat_barrier*);
 /* Check if the barrier has been released */
 Caml_inline int caml_plat_barrier_is_released(caml_plat_barrier* barrier) {
   return atomic_load_acquire(&barrier->futex.value) == Barrier_released;
 }
+
+/* Release and wait, but on a futex only.
+
+   This is like a(n inverted) binary semaphore, but with no decrement
+   on `wait`. That is, `release` sets the futex to 0, which `wait`
+   waits for.
+
+   A futex used this way is 0 (Barrier_released) when released, and
+   nonzero otherwise. It should be set to 1 (Barrier_unreleased) to
+   block.
+*/
+void caml_plat_barrier_raw_release(caml_plat_futex* futex);
+void caml_plat_barrier_raw_wait(caml_plat_futex* futex);
+
+/* Release the barrier unconditionally, letting all parties through */
+Caml_inline void caml_plat_barrier_release(caml_plat_barrier* barrier) {
+  caml_plat_barrier_raw_release(&barrier->futex);
+}
 /* Block until released */
-void caml_plat_barrier_wait(caml_plat_barrier*);
+Caml_inline void caml_plat_barrier_wait(caml_plat_barrier* barrier) {
+  caml_plat_barrier_raw_wait(&barrier->futex);
+}
 
 /* -- Sense-reversing -- */
 /* Flip the sense of the barrier, releasing current waiters and
@@ -242,11 +261,14 @@ void caml_plat_barrier_wait_sense(caml_plat_barrier*, barrier_status current_sen
 #define GENSYM_2(name, l) GENSYM_3(name, l)
 #define GENSYM(name) GENSYM_2(name, __LINE__)
 
-#define Max_spins 1000
+#define Max_spins_long 1000
+#define Max_spins_medium 300
+#define Max_spins_short 30
 
 /* Spin up to some number of times, should be used when we have useful
    work to do, or expect the condition to come true fast */
-#define SPIN_WAIT_BOUNDED SPIN_WAIT_NTIMES(Max_spins)
+#define SPIN_WAIT_BOUNDED SPIN_WAIT_NTIMES(Max_spins_medium)
+#define SPIN_WAIT_BOUNDED_LONG SPIN_WAIT_NTIMES(Max_spins_long)
 #define SPIN_WAIT_NTIMES(N)                                             \
   unsigned GENSYM(caml__spins) = 0;                                     \
   unsigned GENSYM(caml__max_spins) = (N);                               \
@@ -254,7 +276,7 @@ void caml_plat_barrier_wait_sense(caml_plat_barrier*, barrier_status current_sen
 
 /* Spin for unbounded time, this should only be used when there is a
    very short critical section we are waiting on */
-#define SPIN_WAIT SPIN_WAIT_BACK_OFF(Max_spins)
+#define SPIN_WAIT SPIN_WAIT_BACK_OFF(Max_spins_long)
 
 struct caml_plat_srcloc {
   const char* file;

@@ -713,6 +713,15 @@ static void minor_gc_leave_barrier(caml_domain_state* domain, int participating_
     }
   }
 
+  /* Spin a bit longer, which is far less fruitful if we're waiting on
+     more than one thread */
+  unsigned spins = participating_count == 2 ? Max_spins_medium : Max_spins_short;
+  SPIN_WAIT_NTIMES(spins) {
+    if (caml_plat_barrier_is_released(&domains_finished_minor_gc)) {
+      return;
+    }
+  }
+
   /* If there's nothing to do, block */
   caml_plat_barrier_wait(&domains_finished_minor_gc);
 }
