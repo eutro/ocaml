@@ -192,7 +192,9 @@ typedef uintnat barrier_status;
    In a sense-reversing barrier, this also encodes the current sense
    of the barrier in BARRIER_SENSE_BIT, which should be masked off if
    checking for the last arrival. */
-barrier_status caml_plat_barrier_arrive(caml_plat_barrier*);
+Caml_inline barrier_status caml_plat_barrier_arrive(caml_plat_barrier* barrier) {
+  return 1 + atomic_fetch_add(&barrier->arrived, 1);
+}
 #define BARRIER_SENSE_BIT 0x100000
 
 /* -- Single-sense --

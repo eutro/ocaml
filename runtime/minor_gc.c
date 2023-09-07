@@ -782,16 +782,15 @@ static void caml_stw_empty_minor_heap (caml_domain_state* domain, void* unused,
 }
 
 /* must be called within a STW section  */
-void caml_empty_minor_heap_no_major_slice_from_stw(caml_domain_state* domain,
-                                            void* unused,
-                                             int participating_count,
-                                             caml_domain_state** participating)
+void
+caml_empty_minor_heap_no_major_slice_from_stw(caml_domain_state* domain,
+                                              void* unused,
+                                              int participating_count,
+                                              caml_domain_state** participating)
 {
-  barrier_status b = caml_global_barrier_begin();
-  if( caml_global_barrier_is_final(b) ) {
+  Caml_global_barrier_if_final(participating_count) {
     caml_empty_minor_heap_setup(domain);
   }
-  caml_global_barrier_end(b);
 
   /* if we are entering from within a major GC STW section then
      we do not schedule another major collection slice */

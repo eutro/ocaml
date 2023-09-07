@@ -802,46 +802,47 @@ static void unreserve_minor_heaps(void) {
   caml_mem_unmap((void *) caml_minor_heaps_start, size);
 }
 
-static void stw_resize_minor_heap_reservation(caml_domain_state* domain,
-                                       void* minor_wsz_data,
-                                       int participating_count,
-                                       caml_domain_state** participating) {
-  barrier_status b;
-  uintnat new_minor_wsz = (uintnat) minor_wsz_data;
+static void domain_resize_heap_reservation(uintnat new_minor_wsz)
+{
+  CAML_EV_BEGIN(EV_DOMAIN_RESIZE_HEAP_RESERVATION);
+  caml_gc_log("stw_resize_minor_heap_reservation: "
+              "unreserve_minor_heaps");
 
+  unreserve_minor_heaps();
+  /* new_minor_wsz is page-aligned because caml_norm_minor_heap_size has
+     been called to normalize it earlier.
+  */
+  caml_minor_heap_max_wsz = new_minor_wsz;
+  caml_gc_log("stw_resize_minor_heap_reservation: reserve_minor_heaps");
+  reserve_minor_heaps();
+  /* The call to [reserve_minor_heaps] makes a new reservation,
+     and it also updates the reservation boundaries of each domain
+     by mutating its [minor_heap_area_start{,_end}] variables.
+
+     These variables are synchronized by the fact that we are inside
+     a STW section: no other domains are running in parallel, and
+     the participating domains will synchronize with this write by
+     exiting the barrier, before they read those variables in
+     [allocate_minor_heap] below. */
+  CAML_EV_END(EV_DOMAIN_RESIZE_HEAP_RESERVATION);
+}
+
+static void stw_resize_minor_heap_reservation(caml_domain_state* domain,
+                                              void* minor_wsz_data,
+                                              int participating_count,
+                                              caml_domain_state** participating) {
   caml_gc_log("stw_resize_minor_heap_reservation: "
               "caml_empty_minor_heap_no_major_slice_from_stw");
-  caml_empty_minor_heap_no_major_slice_from_stw(domain, NULL,
-                                            participating_count, participating);
+  caml_empty_minor_heap_no_major_slice_from_stw(
+    domain, NULL, participating_count, participating);
 
   caml_gc_log("stw_resize_minor_heap_reservation: free_minor_heap");
   free_minor_heap();
 
-  b = caml_global_barrier_begin ();
-  if (caml_global_barrier_is_final(b)) {
-    CAML_EV_BEGIN(EV_DOMAIN_RESIZE_HEAP_RESERVATION);
-    caml_gc_log("stw_resize_minor_heap_reservation: "
-                "unreserve_minor_heaps");
-
-    unreserve_minor_heaps();
-    /* new_minor_wsz is page-aligned because caml_norm_minor_heap_size has
-       been called to normalize it earlier.
-    */
-    caml_minor_heap_max_wsz = new_minor_wsz;
-    caml_gc_log("stw_resize_minor_heap_reservation: reserve_minor_heaps");
-    reserve_minor_heaps();
-    /* The call to [reserve_minor_heaps] makes a new reservation,
-       and it also updates the reservation boundaries of each domain
-       by mutating its [minor_heap_area_start{,_end}] variables.
-
-       These variables are synchronized by the fact that we are inside
-       a STW section: no other domains are running in parallel, and
-       the participating domains will synchronize with this write by
-       exiting the barrier, before they read those variables in
-       [allocate_minor_heap] below. */
-    CAML_EV_END(EV_DOMAIN_RESIZE_HEAP_RESERVATION);
+  Caml_global_barrier_if_final(participating_count) {
+    uintnat new_minor_wsz = (uintnat) minor_wsz_data;
+    domain_resize_heap_reservation(new_minor_wsz);
   }
-  caml_global_barrier_end(b);
 
   caml_gc_log("stw_resize_minor_heap_reservation: "
               "allocate_minor_heap");
@@ -1283,11 +1284,6 @@ CAMLprim value caml_ml_domain_unique_token (value unit)
 
 barrier_status caml_global_barrier_begin(void)
 {
-  if (stw_request.num_domains == 1) {
-    /* avoid expensive atomics if we're alone, return a status that
-       counts as final */
-    return 1 /* == stw_request.num_domains */;
-  }
   return caml_plat_barrier_arrive(&stw_request.barrier);
 }
 
@@ -1296,32 +1292,56 @@ int caml_global_barrier_is_final(barrier_status b)
   return ((b & ~BARRIER_SENSE_BIT) == stw_request.num_domains);
 }
 
+static void caml_global_barrier_flip(barrier_status sense)
+{
+  caml_plat_barrier_flip(&stw_request.barrier, sense);
+}
+
+static void caml_global_barrier_wait(barrier_status sense)
+{
+  /* it's not worth spinning for too long if there's more than one other domain */
+  unsigned spins = stw_request.num_domains == 2 ? Max_spins_long : Max_spins_short;
+  SPIN_WAIT_NTIMES(spins) {
+    if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
+      break;
+    }
+  }
+  /* wait until another domain flips the sense */
+  caml_plat_barrier_wait_sense(&stw_request.barrier, sense);
+}
+
 void caml_global_barrier_end(barrier_status b)
 {
   barrier_status sense = b & BARRIER_SENSE_BIT;
   if (caml_global_barrier_is_final(b)) {
     /* last domain into the barrier, flip sense */
-    if (stw_request.num_domains != 1) {
-      caml_plat_barrier_flip(&stw_request.barrier, sense);
-    }
+    caml_global_barrier_flip(sense);
   } else {
-    /* it's not worth spinning for too long if there's more than one other domain */
-    unsigned spins = stw_request.num_domains == 2 ? Max_spins_long : Max_spins_short;
-    SPIN_WAIT_NTIMES(spins) {
-      if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
-        break;
-      }
-    }
-    /* wait until another domain flips the sense */
-    caml_plat_barrier_wait_sense(&stw_request.barrier, sense);
+    caml_global_barrier_wait(sense);
   }
 }
 
 void caml_global_barrier(void)
 {
-  if (stw_request.num_domains == 1) return;
   barrier_status b = caml_global_barrier_begin();
   caml_global_barrier_end(b);
+}
+
+barrier_status caml_global_barrier_wait_unless_final(void)
+{
+  barrier_status b = caml_global_barrier_begin();
+  if (caml_global_barrier_is_final(b)) {
+    CAMLassert(b); /* always nonzero */
+    return b;
+  } else {
+    caml_global_barrier_wait(b & BARRIER_SENSE_BIT);
+    return 0;
+  }
+}
+
+void caml_global_barrier_release_as_final(barrier_status b)
+{
+  caml_global_barrier_flip(b & BARRIER_SENSE_BIT);
 }
 
 int caml_global_barrier_num_domains(void)

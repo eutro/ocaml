@@ -249,11 +249,6 @@ void caml_plat_futex_free(caml_plat_futex* ftx) {
 }
 #endif
 
-barrier_status caml_plat_barrier_arrive(caml_plat_barrier* barrier) {
-  uintnat prev_parties = atomic_fetch_add(&barrier->arrived, 1);
-  return prev_parties + 1;
-}
-
 /* single-sense */
 
 void caml_plat_barrier_raw_release(caml_plat_futex* futex) {
