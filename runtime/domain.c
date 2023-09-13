@@ -173,6 +173,7 @@ struct dom_internal {
 typedef struct dom_internal dom_internal;
 
 static struct {
+  /* enter barrier */
   caml_plat_futex domains_still_running;
   atomic_uintnat num_domains_still_processing;
   void (*callback)(caml_domain_state*,
@@ -1289,35 +1290,37 @@ barrier_status caml_global_barrier_begin(void)
 
 int caml_global_barrier_is_final(barrier_status b)
 {
-  return ((b & ~BARRIER_SENSE_BIT) == stw_request.num_domains);
+  return caml_global_barrier_is_nth(b, stw_request.num_domains);
 }
 
+/* last domain into the barrier, flip sense */
 static void caml_global_barrier_flip(barrier_status sense)
 {
   caml_plat_barrier_flip(&stw_request.barrier, sense);
 }
 
-static void caml_global_barrier_wait(barrier_status sense)
+/* wait until another domain flips the sense */
+static void caml_global_barrier_wait(barrier_status sense, int num_participating)
 {
   /* it's not worth spinning for too long if there's more than one other domain */
-  unsigned spins = stw_request.num_domains == 2 ? Max_spins_long : Max_spins_short;
+  unsigned spins = num_participating == 2 ? Max_spins_long : Max_spins_short;
   SPIN_WAIT_NTIMES(spins) {
     if (caml_plat_barrier_sense_has_flipped(&stw_request.barrier, sense)) {
-      break;
+      return;
     }
   }
-  /* wait until another domain flips the sense */
+  /* just block */
   caml_plat_barrier_wait_sense(&stw_request.barrier, sense);
 }
 
 void caml_global_barrier_end(barrier_status b)
 {
   barrier_status sense = b & BARRIER_SENSE_BIT;
-  if (caml_global_barrier_is_final(b)) {
-    /* last domain into the barrier, flip sense */
+  int num_domains = stw_request.num_domains;
+  if (caml_global_barrier_is_nth(b, num_domains)) {
     caml_global_barrier_flip(sense);
   } else {
-    caml_global_barrier_wait(sense);
+    caml_global_barrier_wait(sense, num_domains);
   }
 }
 
@@ -1327,14 +1330,14 @@ void caml_global_barrier(void)
   caml_global_barrier_end(b);
 }
 
-barrier_status caml_global_barrier_wait_unless_final(void)
+barrier_status caml_global_barrier_wait_unless_final(int num_participating)
 {
   barrier_status b = caml_global_barrier_begin();
-  if (caml_global_barrier_is_final(b)) {
+  if (caml_global_barrier_is_nth(b, num_participating)) {
     CAMLassert(b); /* always nonzero */
     return b;
   } else {
-    caml_global_barrier_wait(b & BARRIER_SENSE_BIT);
+    caml_global_barrier_wait(b & BARRIER_SENSE_BIT, num_participating);
     return 0;
   }
 }

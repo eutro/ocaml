@@ -185,24 +185,15 @@ static void runtime_events_teardown_raw(int remove_file) {
     atomic_store_release(&runtime_events_enabled, 0);
 }
 
-#define Global_barrier_run_if_first(num_participating, F)   \
-  int alone = (num_participating) == 1;                     \
-  barrier_status b;                                         \
-  if (alone || caml_global_barrier_is_first(                \
-        b = caml_global_barrier_begin())) {                 \
-    F;                                                      \
-  }                                                         \
-  if (!alone) caml_global_barrier_end(b)
-
 /* Stop-the-world which calls the teardown code */
 static void
 stw_teardown_runtime_events(caml_domain_state *domain_state,
                             void *remove_file_data, int num_participating,
                             caml_domain_state **participating_domains) {
-  Global_barrier_run_if_first(num_participating,
+  Caml_global_barrier_if_first(num_participating) {
     int *remove_file = remove_file_data;
-    runtime_events_teardown_raw(*remove_file)
-  );
+    runtime_events_teardown_raw(*remove_file);
+  }
 }
 
 
@@ -419,9 +410,9 @@ stw_create_runtime_events(caml_domain_state *domain_state, void *data,
                           int num_participating,
                           caml_domain_state **participating_domains) {
   /* Everyone must be stopped for starting and stopping runtime_events */
-  Global_barrier_run_if_first(num_participating,
-    runtime_events_create_raw()
-  );
+  Caml_global_barrier_if_first(num_participating) {
+    runtime_events_create_raw();
+  }
 }
 
 CAMLprim value caml_runtime_events_start(void) {
