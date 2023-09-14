@@ -452,7 +452,7 @@ struct pool* caml_pool_of_shared_block(value v)
 
 static intnat pool_sweep(struct caml_heap_state* local, pool** plist,
                          sizeclass sz, int release_to_global_pool) {
-  intnat work = 0;
+  intnat work;
   pool* a = *plist;
   if (!a) return 0;
   *plist = a->next;
@@ -460,11 +460,12 @@ static intnat pool_sweep(struct caml_heap_state* local, pool** plist,
   {
     value* p = (value*)((char*)a + Bsize_wsize(POOL_SLAB_WOFFSET(sz)));
     value* end = (value*)a + POOL_WSIZE;
+    work = end - p;
     mlsize_t wh = wsize_sizeclass[sz];
     int all_used = 1;
     struct heap_stats* s = &local->stats;
 
-    while (p + wh <= end) {
+    do {
       header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
       if (hd == 0) {
         /* already on freelist */
@@ -500,8 +501,7 @@ static intnat pool_sweep(struct caml_heap_state* local, pool** plist,
         release_to_global_pool = 0;
       }
       p += wh;
-      work += wh;
-    }
+    } while (p + wh <= end);
 
     if (release_to_global_pool) {
       pool_release(local, a, sz);
