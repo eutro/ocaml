@@ -83,19 +83,15 @@ static atomic_uintnat num_domains_to_ephe_sweep;
 static atomic_uintnat num_domains_to_final_update_first;
 static atomic_uintnat num_domains_to_final_update_last;
 
-/* These two counters keep track of how much work the GC is supposed to
-   do in order to keep up with allocation. Both are in GC work units.
-   `alloc_counter` increases when we allocate: the number of words allocated
+/* This counter keeps track of how much work the GC is supposed to
+   do in order to keep up with allocation. It is in GC work units.
+   `outstanding_work_counter` increases when we allocate: the number of words allocated
    is converted to GC work units and added to this counter.
-   `work_counter` increases when the GC has done some work.
-   The difference between the two is how much the GC is lagging behind
-   (or in advance of) allocations.
-   These counters can wrap around (see function `diffmod`) as long as they
-   don't get too far apart, which is guaranteed by the limited size of
-   memory.
+   It decreases when the GC has done some work.
+   The value is how much the GC is lagging behind (or in advance of, if negative) allocations.
+   This counter must not wrap around, which is guaranteed by the limited size of memory.
 */
-static atomic_uintnat alloc_counter;
-static atomic_uintnat work_counter;
+static _Atomic intnat outstanding_work_counter;
 
 enum global_roots_status{
   WORK_UNSTARTED,
@@ -630,16 +626,16 @@ static void update_major_slice_work(intnat howmuch,
                    extra_work);
 
   new_work = max3 (alloc_work, dependent_work, extra_work);
-  atomic_fetch_add (&work_counter, dom_st->major_work_done_between_slices);
+  intnat work_difference = diffmod(new_work, dom_st->major_work_done_between_slices);
+  intnat outstanding_work = atomic_fetch_add (&outstanding_work_counter, work_difference) + work_difference;
   dom_st->major_work_done_between_slices = 0;
-  atomic_fetch_add (&alloc_counter, new_work);
   if (howmuch == AUTO_TRIGGERED_MAJOR_SLICE ||
       howmuch == GC_CALCULATE_MAJOR_SLICE) {
-    dom_st->slice_target = atomic_load (&alloc_counter);
+    dom_st->slice_target = outstanding_work;
     dom_st->slice_budget = 0;
   }else{
     /* forced or opportunistic GC slice with explicit quantity */
-    dom_st->slice_target = atomic_load (&work_counter);  /* already reached */
+    dom_st->slice_target = 0;  /* already reached */
     dom_st->slice_budget = howmuch;
   }
 
@@ -649,18 +645,15 @@ static void update_major_slice_work(intnat howmuch,
               " %"ARCH_INTNAT_PRINTF_FORMAT "d alloc_work, "
               " %"ARCH_INTNAT_PRINTF_FORMAT "d dependent_work, "
               " %"ARCH_INTNAT_PRINTF_FORMAT "d extra_work,  "
-              " %"ARCH_INTNAT_PRINTF_FORMAT "u work counter %s,  "
-              " %"ARCH_INTNAT_PRINTF_FORMAT "u alloc counter,  "
+              " %"ARCH_INTNAT_PRINTF_FORMAT "d work counter %s,  "
               " %"ARCH_INTNAT_PRINTF_FORMAT "u slice target,  "
               " %"ARCH_INTNAT_PRINTF_FORMAT "d slice budget"
               ,
               caml_gc_phase_char(may_access_gc_phase),
               (uintnat)heap_words, dom_st->allocated_words,
               alloc_work, dependent_work, extra_work,
-              atomic_load (&work_counter),
-              atomic_load (&work_counter) > atomic_load (&alloc_counter)
-                ? "[ahead]" : "[behind]",
-              atomic_load (&alloc_counter),
+              outstanding_work,
+              outstanding_work < 0 ? "[ahead]" : "[behind]",
               dom_st->slice_target, dom_st->slice_budget
               );
 }
@@ -681,7 +674,7 @@ static intnat get_major_slice_work(collection_slice_mode mode){
 
   /* calculate how much work remains to do for this slice */
   intnat budget =
-    max2 (diffmod (dom_st->slice_target, atomic_load (&work_counter)),
+    max2 (atomic_load (&outstanding_work_counter),
           dom_st->slice_budget);
   return min2(budget, Chunk_size);
 }
@@ -697,8 +690,10 @@ static void commit_major_slice_work(intnat words_done) {
                words_done);
 
   dom_st->slice_budget -= words_done;
-  atomic_fetch_add (&work_counter, words_done);
-  if (diffmod (dom_st->slice_target, atomic_load (&work_counter)) <= 0){
+  intnat outstanding_work =
+    atomic_fetch_sub (&outstanding_work_counter, words_done)
+    - words_done;
+  if (outstanding_work <= 0){
     /* We've done enough work by ourselves, no need to interrupt the other
        domains. */
     dom_st->requested_global_major_slice = 0;
