@@ -147,13 +147,16 @@ void caml_global_barrier_release_as_final(barrier_status);
 #define Caml_maybe_global_barrier(num_participating)    \
   if ((num_participating) != 1) caml_global_barrier()
 /* arrive at the global barrier and run the body if ... */
-/* ... we are the first thread */
+/* ... we are the first thread, the body is not guaranteed to
+   happen-before the barrier release in other threads */
 #define Caml_global_barrier_if_first(num_participating)             \
   Caml__global_barrier_if_X_setup(num_participating);               \
   Caml__global_barrier_if_X_finish_with(caml_global_barrier_end)    \
    Caml__global_barrier_if_X_run_if(caml_global_barrier_is_first,   \
                                     caml_global_barrier_begin())
-/* ... we are the final thread */
+/* ... we are the final thread, the barrier isn't released until the
+   body completes, and is guaranteed to happen-before the barrier
+   release in other threads too */
 #define Caml_global_barrier_if_final(num_participating)                 \
   Caml__global_barrier_if_X_setup(num_participating);                   \
   Caml__global_barrier_if_X_run_if(                                     \
