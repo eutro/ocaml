@@ -205,7 +205,10 @@ static caml_plat_mutex all_domains_lock = CAML_PLAT_MUTEX_INITIALIZER;
 static caml_plat_cond all_domains_cond =
     CAML_PLAT_COND_INITIALIZER(&all_domains_lock);
 static atomic_uintnat /* dom_internal* */ stw_leader = 0;
-static struct dom_internal all_domains[Max_domains];
+static int stw_requests_suspended = 0; /* protected by all_domains_lock */
+static caml_plat_cond requests_suspended_cond =
+    CAML_PLAT_COND_INITIALIZER(&all_domains_lock);
+static dom_internal all_domains[Max_domains];
 
 CAMLexport atomic_uintnat caml_num_domains_running;
 
@@ -545,11 +548,21 @@ static void domain_create(uintnat initial_minor_heap_wsize) {
      set atomically */
   caml_plat_lock(&all_domains_lock);
 
+#define Max_stws_before_suspend 4
+  int stws = 1;
   /* Wait until any in-progress STW sections end. */
   while (atomic_load_acquire(&stw_leader)) {
+    if (stws++ == Max_stws_before_suspend) {
+      /* this isn't funny anymore, prevent new STWs */
+      stw_requests_suspended = 1;
+    }
     /* [caml_plat_wait] releases [all_domains_lock] until the current
        STW section ends, and then takes the lock again. */
     caml_plat_wait(&all_domains_cond);
+  }
+  if (stws > Max_stws_before_suspend) {
+    stw_requests_suspended = 0;
+    caml_plat_broadcast(&requests_suspended_cond);
   }
 
   d = next_free_domain();
@@ -1527,10 +1540,18 @@ int caml_try_run_on_all_domains_with_spin_work(
   }
 
   /* see if there is a stw_leader already */
+ check_for_stw_leader:
   if (atomic_load_acquire(&stw_leader)) {
     caml_plat_unlock(&all_domains_lock);
     caml_handle_incoming_interrupts();
     return 0;
+  }
+
+  /* if STWs are suspended we need to release the lock and apologise
+     profusely to the domain(s) trying to spawn */
+  if (stw_requests_suspended) {
+    caml_plat_wait(&requests_suspended_cond);
+    goto check_for_stw_leader;
   }
 
   /* we have the lock and can claim the stw_leader */
